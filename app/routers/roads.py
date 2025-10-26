@@ -58,32 +58,87 @@ async def get_roads(
     request: Request,
     response: Response,
     skip: int = 0,
-    limit: int = 50
+    limit: int = 50,
+    grouped: bool = False
 ):
     """
     Get all approved roads (public endpoint)
+    
+    Query Parameters:
+    - grouped: If true, returns roads grouped by name with segment counts
+    - skip, limit: Pagination (not used when grouped=true)
+    
     Rate limit: 500 per hour per IP
     """
     db = get_database()
     
-    # Only return approved roads
-    cursor = db.roads.find({"approved": True}).sort("created_at", -1).skip(skip).limit(limit)
-    roads = await cursor.to_list(length=limit)
-    
-    total = await db.roads.count_documents({"approved": True})
-    
-    roads_response = [road_to_response(road) for road in roads]
-    
-    return APIResponse(
-        status="success",
-        message="Roads retrieved successfully",
-        data={
-            "roads": [r.model_dump() for r in roads_response],
-            "total": total,
-            "skip": skip,
-            "limit": limit
-        }
-    )
+    if grouped:
+        # Return grouped roads by name with segment counts
+        pipeline = [
+            {"$match": {"approved": True}},
+            {
+                "$group": {
+                    "_id": "$road_name",
+                    "segment_count": {"$sum": 1},
+                    "road_name": {"$first": "$road_name"},
+                    "sample_id": {"$first": "$_id"},
+                    "sample_location": {"$first": "$location"},
+                    "sample_status": {"$first": "$status"},
+                    "sample_contractor": {"$first": "$contractor"},
+                    "has_osm_data": {"$first": "$has_osm_data"},
+                    "created_at": {"$first": "$created_at"}
+                }
+            },
+            {"$sort": {"road_name": 1}}
+        ]
+        
+        results = await db.roads.aggregate(pipeline).to_list(length=None)
+        
+        grouped_roads = []
+        for result in results:
+            grouped_roads.append({
+                "road_name": result["road_name"],
+                "segment_count": result["segment_count"],
+                "sample_id": str(result["sample_id"]),
+                "sample_location": {
+                    "lat": result["sample_location"]["coordinates"][1],
+                    "lng": result["sample_location"]["coordinates"][0]
+                },
+                "sample_status": result["sample_status"],
+                "sample_contractor": result["sample_contractor"],
+                "has_osm_data": result.get("has_osm_data", False),
+                "created_at": format_datetime_response(result["created_at"])
+            })
+        
+        return APIResponse(
+            status="success",
+            message="Grouped roads retrieved successfully",
+            data={
+                "roads": grouped_roads,
+                "total": len(grouped_roads),
+                "grouped": True
+            }
+        )
+    else:
+        # Return all roads (original behavior)
+        cursor = db.roads.find({"approved": True}).sort("created_at", -1).skip(skip).limit(limit)
+        roads = await cursor.to_list(length=limit)
+        
+        total = await db.roads.count_documents({"approved": True})
+        
+        roads_response = [road_to_response(road) for road in roads]
+        
+        return APIResponse(
+            status="success",
+            message="Roads retrieved successfully",
+            data={
+                "roads": [r.model_dump() for r in roads_response],
+                "total": total,
+                "skip": skip,
+                "limit": limit,
+                "grouped": False
+            }
+        )
 
 
 @router.get("/map", response_model=APIResponse)
@@ -592,5 +647,55 @@ async def get_road_by_osm_id(request: Request, response: Response, osm_way_id: s
         status="success",
         message="Road data found for this OSM way",
         data={"road": road_response.model_dump()}
+    )
+
+
+@router.get("/by-name/{road_name}", response_model=APIResponse)
+@limiter.limit(RATE_LIMIT_READ)
+async def get_road_segments_by_name(
+    request: Request,
+    response: Response,
+    road_name: str,
+    skip: int = 0,
+    limit: int = 100
+):
+    """
+    Get all segments for a specific road name.
+    Useful for showing all segments of "NH 44" for example.
+    Rate limit: 500 per hour per IP
+    """
+    db = get_database()
+    
+    # Find all approved roads with this exact name
+    cursor = db.roads.find({
+        "road_name": road_name,
+        "approved": True
+    }).sort("created_at", -1).skip(skip).limit(limit)
+    
+    roads = await cursor.to_list(length=limit)
+    
+    if not roads:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No roads found with name: {road_name}"
+        )
+    
+    total = await db.roads.count_documents({
+        "road_name": road_name,
+        "approved": True
+    })
+    
+    roads_response = [road_to_response(road) for road in roads]
+    
+    return APIResponse(
+        status="success",
+        message=f"Found {total} segments for {road_name}",
+        data={
+            "road_name": road_name,
+            "segments": [r.model_dump() for r in roads_response],
+            "total_segments": total,
+            "skip": skip,
+            "limit": limit
+        }
     )
 
