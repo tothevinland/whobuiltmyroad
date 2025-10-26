@@ -62,14 +62,22 @@ async def search_roads_by_name(
     Returns:
         List of road data with geometry
     """
-    # Escape special regex characters in road name
-    escaped_name = road_name.replace('"', '\\"')
+    # Escape special regex characters in road name, but keep spaces
+    escaped_name = road_name.replace('"', '\\"').replace('\\', '\\\\')
     
-    # Overpass QL query to search for roads
+    # Make the search more flexible by searching for roads that contain the query
+    # Use .* before and after to match partial names
+    # This will find "NH 44", "National Highway 44", "NH44", etc. when searching for "44"
+    flexible_pattern = f".*{escaped_name}.*"
+    
+    # Overpass QL query - more flexible search
+    # Search in name, ref (reference number), and alt_name tags
     query = f"""
     [out:json][timeout:25];
     (
-      way["highway"]["name"~"{escaped_name}",i](around:{radius},{lat},{lng});
+      way["highway"]["name"~"{flexible_pattern}",i](around:{radius},{lat},{lng});
+      way["highway"]["ref"~"{flexible_pattern}",i](around:{radius},{lat},{lng});
+      way["highway"]["alt_name"~"{flexible_pattern}",i](around:{radius},{lat},{lng});
     );
     out geom;
     """
@@ -77,22 +85,42 @@ async def search_roads_by_name(
     result = await query_overpass(query)
     
     roads = []
+    seen_ids = set()  # Prevent duplicates
+    
     for element in result.get("elements", []):
+        way_id = str(element["id"])
+        
+        # Skip if already processed
+        if way_id in seen_ids:
+            continue
+        
         if element.get("type") == "way" and element.get("geometry"):
+            seen_ids.add(way_id)
+            
             # Convert to GeoJSON LineString
             coordinates = [
                 [node["lon"], node["lat"]]
                 for node in element.get("geometry", [])
             ]
             
+            tags = element.get("tags", {})
+            
+            # Get best name (prefer name, then ref, then alt_name)
+            road_display_name = (
+                tags.get("name") or 
+                tags.get("ref") or 
+                tags.get("alt_name") or 
+                "Unnamed Road"
+            )
+            
             roads.append({
-                "osm_way_id": str(element["id"]),
-                "name": element.get("tags", {}).get("name", "Unnamed Road"),
+                "osm_way_id": way_id,
+                "name": road_display_name,
                 "geometry": {
                     "type": "LineString",
                     "coordinates": coordinates
                 },
-                "tags": element.get("tags", {})
+                "tags": tags
             })
     
     return roads
