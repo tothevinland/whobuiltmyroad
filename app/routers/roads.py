@@ -88,17 +88,51 @@ async def get_roads(
 
 @router.get("/map", response_model=APIResponse)
 @limiter.limit(RATE_LIMIT_READ)
-async def get_roads_geojson(request: Request, response: Response):
+async def get_roads_geojson(
+    request: Request,
+    response: Response,
+    min_lat: Optional[float] = None,
+    max_lat: Optional[float] = None,
+    min_lng: Optional[float] = None,
+    max_lng: Optional[float] = None,
+    limit: int = 1000
+):
     """
-    Get all approved roads as GeoJSON for map display.
+    Get approved roads as GeoJSON for map display.
+    
+    Query Parameters:
+    - min_lat, max_lat, min_lng, max_lng: Bounding box (map bounds)
+    - limit: Max roads to return (default: 1000, max: 5000)
+    
+    IMPORTANT: Always send map bounds to avoid loading ALL roads!
+    
     Roads with OSM data return LineString geometry, others return Point.
     Rate limit: 500 per hour per IP
     """
     db = get_database()
     
-    # Get all approved roads
-    cursor = db.roads.find({"approved": True})
-    roads = await cursor.to_list(length=None)
+    # Limit max roads to prevent overload
+    if limit > 5000:
+        limit = 5000
+    
+    # Build query
+    query = {"approved": True}
+    
+    # If bounding box provided, filter by location
+    if all([min_lat, max_lat, min_lng, max_lng]):
+        # MongoDB geospatial query - find roads within bounding box
+        query["location"] = {
+            "$geoWithin": {
+                "$box": [
+                    [min_lng, min_lat],  # Bottom left
+                    [max_lng, max_lat]   # Top right
+                ]
+            }
+        }
+    
+    # Get roads with limit
+    cursor = db.roads.find(query).limit(limit)
+    roads = await cursor.to_list(length=limit)
     
     features = []
     for road in roads:
