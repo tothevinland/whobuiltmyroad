@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from slowapi.errors import RateLimitExceeded
 from app.database import connect_to_mongo, close_mongo_connection
-from app.routers import auth, roads, admin, search
+from app.routers import auth, roads, admin, search, osm
 from app.config import settings
 from app.utils.rate_limit import limiter
 
@@ -74,6 +74,7 @@ app.include_router(auth.router)
 app.include_router(roads.router)
 app.include_router(admin.router)
 app.include_router(search.router)
+app.include_router(osm.router)
 
 
 @app.get("/")

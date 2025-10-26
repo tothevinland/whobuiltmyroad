@@ -63,7 +63,7 @@ class RoadInDB(BaseModel):
     
     id: Optional[PyObjectId] = Field(default=None, alias="_id")
     road_name: str
-    location: LocationInDB  # GeoJSON Point
+    location: LocationInDB  # GeoJSON Point (kept for backward compatibility)
     contractor: str
     approved_by: str
     total_cost: str
@@ -77,6 +77,11 @@ class RoadInDB(BaseModel):
     extra_fields: Dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    
+    # OpenStreetMap integration fields
+    osm_way_id: Optional[str] = None  # OpenStreetMap way ID
+    geometry: Optional[Dict[str, Any]] = None  # GeoJSON LineString from OSM
+    has_osm_data: bool = False  # True if linked to OSM
 
 
 class FeedbackInDB(BaseModel):

@@ -45,7 +45,10 @@ def road_to_response(road: dict) -> RoadResponse:
         approved=road["approved"],
         extra_fields=road.get("extra_fields", {}),
         created_at=format_datetime_response(road["created_at"]),
-        updated_at=format_datetime_response(road["updated_at"])
+        updated_at=format_datetime_response(road["updated_at"]),
+        osm_way_id=road.get("osm_way_id"),
+        geometry=road.get("geometry"),
+        has_osm_data=road.get("has_osm_data", False)
     )
 
 
@@ -87,7 +90,8 @@ async def get_roads(
 @limiter.limit(RATE_LIMIT_READ)
 async def get_roads_geojson(request: Request, response: Response):
     """
-    Get all approved roads as GeoJSON for map display
+    Get all approved roads as GeoJSON for map display.
+    Roads with OSM data return LineString geometry, others return Point.
     Rate limit: 500 per hour per IP
     """
     db = get_database()
@@ -98,18 +102,31 @@ async def get_roads_geojson(request: Request, response: Response):
     
     features = []
     for road in roads:
-        feature = GeoJSONFeature(
-            type="Feature",
-            geometry={
+        # Check if road has OSM geometry data
+        has_osm = road.get("has_osm_data", False) and road.get("geometry")
+        
+        if has_osm:
+            # Use LineString geometry from OSM
+            geometry = road["geometry"]
+        else:
+            # Use Point geometry (backward compatible)
+            geometry = {
                 "type": "Point",
                 "coordinates": road["location"]["coordinates"]  # [lng, lat]
-            },
+            }
+        
+        feature = GeoJSONFeature(
+            type="Feature",
+            geometry=geometry,
             properties={
                 "id": str(road["_id"]),
                 "road_name": road["road_name"],
                 "contractor": road["contractor"],
                 "status": road["status"],
-                "total_cost": road["total_cost"]
+                "total_cost": road["total_cost"],
+                "has_info": True,  # We always have construction info
+                "has_osm_data": has_osm,
+                "osm_way_id": road.get("osm_way_id")
             }
         )
         features.append(feature)
@@ -284,10 +301,26 @@ async def create_road(
     current_user: dict = Depends(get_current_user)
 ):
     """
-    Add a new road (pending approval)
+    Add a new road (pending approval).
+    Can optionally link to OpenStreetMap way by providing osm_way_id.
     Rate limit: 20 per hour per IP
     """
     db = get_database()
+    
+    # Handle OSM integration
+    geometry = road_data.geometry
+    osm_way_id = road_data.osm_way_id
+    has_osm_data = False
+    
+    # If osm_way_id provided but no geometry, fetch it
+    if osm_way_id and not geometry:
+        from app.utils.overpass import get_way_by_id
+        way_data = await get_way_by_id(osm_way_id)
+        if way_data:
+            geometry = way_data["geometry"]
+            has_osm_data = True
+    elif osm_way_id and geometry:
+        has_osm_data = True
     
     # Create road document
     road_dict = {
@@ -308,7 +341,10 @@ async def create_road(
         "approved": False,  # Pending approval
         "extra_fields": road_data.extra_fields,
         "created_at": datetime.now(timezone.utc),
-        "updated_at": datetime.now(timezone.utc)
+        "updated_at": datetime.now(timezone.utc),
+        "osm_way_id": osm_way_id,
+        "geometry": geometry,
+        "has_osm_data": has_osm_data
     }
     
     result = await db.roads.insert_one(road_dict)
@@ -318,7 +354,8 @@ async def create_road(
         message="Road submitted for approval",
         data={
             "road_id": str(result.inserted_id),
-            "approved": False
+            "approved": False,
+            "has_osm_data": has_osm_data
         }
     )
 
@@ -378,6 +415,23 @@ async def update_road(
         update_fields["status"] = road_data.status
     if road_data.extra_fields is not None:
         update_fields["extra_fields"] = road_data.extra_fields
+    
+    # Handle OSM fields
+    if road_data.osm_way_id is not None:
+        update_fields["osm_way_id"] = road_data.osm_way_id
+        # If osm_way_id provided but no geometry, fetch it
+        if road_data.geometry is None:
+            from app.utils.overpass import get_way_by_id
+            way_data = await get_way_by_id(road_data.osm_way_id)
+            if way_data:
+                update_fields["geometry"] = way_data["geometry"]
+                update_fields["has_osm_data"] = True
+        else:
+            update_fields["geometry"] = road_data.geometry
+            update_fields["has_osm_data"] = True
+    elif road_data.geometry is not None:
+        update_fields["geometry"] = road_data.geometry
+        update_fields["has_osm_data"] = True
     
     if not update_fields:
         raise HTTPException(
@@ -478,4 +532,31 @@ async def upload_road_image(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to upload image"
         )
+
+
+@router.get("/osm/{osm_way_id}", response_model=APIResponse)
+@limiter.limit(RATE_LIMIT_READ)
+async def get_road_by_osm_id(request: Request, response: Response, osm_way_id: str):
+    """
+    Check if we have construction data for a specific OpenStreetMap way.
+    Rate limit: 500 per hour per IP
+    """
+    db = get_database()
+    
+    # Find road with this OSM way ID (only approved)
+    road = await db.roads.find_one({"osm_way_id": osm_way_id, "approved": True})
+    
+    if not road:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No construction data found for this OpenStreetMap way"
+        )
+    
+    road_response = road_to_response(road)
+    
+    return APIResponse(
+        status="success",
+        message="Road data found for this OSM way",
+        data={"road": road_response.model_dump()}
+    )
 

@@ -70,6 +70,10 @@ class RoadCreate(BaseModel):
     status: str = Field(..., min_length=1, max_length=100)
     extra_fields: Optional[Dict[str, Any]] = Field(default_factory=dict)
     
+    # OpenStreetMap integration fields (optional)
+    osm_way_id: Optional[str] = None
+    geometry: Optional[Dict[str, Any]] = None
+    
     @field_validator('road_name', 'contractor', 'approved_by', 'maintenance_firm', 'status')
     @classmethod
     def sanitize_text(cls, v):
@@ -89,6 +93,10 @@ class RoadUpdate(BaseModel):
     maintenance_firm: Optional[str] = Field(None, min_length=1, max_length=200)
     status: Optional[str] = Field(None, min_length=1, max_length=100)
     extra_fields: Optional[Dict[str, Any]] = None
+    
+    # OpenStreetMap integration fields (optional)
+    osm_way_id: Optional[str] = None
+    geometry: Optional[Dict[str, Any]] = None
     
     @field_validator('road_name', 'contractor', 'approved_by', 'maintenance_firm', 'status')
     @classmethod
@@ -120,6 +128,11 @@ class RoadResponse(BaseModel):
     extra_fields: Dict[str, Any] = Field(default_factory=dict)
     created_at: DateTimeResponse
     updated_at: DateTimeResponse
+    
+    # OpenStreetMap integration fields
+    osm_way_id: Optional[str] = None
+    geometry: Optional[Dict[str, Any]] = None
+    has_osm_data: bool = False
 
 
 class RoadList(BaseModel):
@@ -170,4 +183,20 @@ class SearchResult(BaseModel):
     lon: float
     type: str
     importance: float
+
+
+# OpenStreetMap Schemas
+class OSMRoadSearchResult(BaseModel):
+    osm_way_id: str
+    name: str
+    geometry: Dict[str, Any]  # GeoJSON LineString
+    tags: Optional[Dict[str, str]] = Field(default_factory=dict)
+    has_our_data: bool = False  # True if we have construction data for this road
+
+
+class OSMWayResponse(BaseModel):
+    osm_way_id: str
+    name: Optional[str] = None
+    geometry: Dict[str, Any]  # GeoJSON LineString
+    tags: Dict[str, str] = Field(default_factory=dict)
 

@@ -16,6 +16,8 @@ async def connect_to_mongo():
     await db.roads.create_index([("location", "2dsphere")])  # Geospatial index
     await db.roads.create_index("approved")
     await db.roads.create_index("added_by_user")
+    await db.roads.create_index("osm_way_id")  # Index for OSM way ID lookups
+    await db.roads.create_index([("osm_way_id", 1), ("approved", 1)])  # Compound index
     await db.feedback.create_index([("road_id", 1), ("date", -1)])
     await db.feedback.create_index("user")
 
