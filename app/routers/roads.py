@@ -89,10 +89,21 @@ async def get_roads(
                     "created_at": {"$first": "$created_at"}
                 }
             },
-            {"$sort": {"road_name": 1}}
+            {"$sort": {"road_name": 1}},
+            {"$skip": skip},
+            {"$limit": limit}
         ]
         
-        results = await db.roads.aggregate(pipeline).to_list(length=None)
+        # Get total count before pagination
+        count_pipeline = [
+            {"$match": {"approved": True}},
+            {"$group": {"_id": "$road_name"}},
+            {"$count": "total"}
+        ]
+        count_result = await db.roads.aggregate(count_pipeline).to_list(length=1)
+        total = count_result[0]["total"] if count_result else 0
+        
+        results = await db.roads.aggregate(pipeline).to_list(length=limit)
         
         grouped_roads = []
         for result in results:
@@ -115,7 +126,9 @@ async def get_roads(
             message="Grouped roads retrieved successfully",
             data={
                 "roads": grouped_roads,
-                "total": len(grouped_roads),
+                "total": total,
+                "skip": skip,
+                "limit": limit,
                 "grouped": True
             }
         )
